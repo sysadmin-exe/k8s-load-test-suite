@@ -168,3 +168,4 @@ See [.github/workflows/load-test.yaml](.github/workflows/load-test.yaml).
 # Delete the cluster (removes everything)
 kind delete cluster --name goodnotes-cluster
 ```
+
