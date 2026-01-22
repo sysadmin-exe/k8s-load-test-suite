@@ -1,0 +1,9 @@
+{{- range .Values.instances }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .namespace }}
+  labels:
+    {{- include "http-echo.instanceLabels" (dict "root" $ "instance" .) | nindent 4 }}
+{{- end }}

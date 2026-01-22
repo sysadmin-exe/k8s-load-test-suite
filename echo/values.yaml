@@ -1,0 +1,55 @@
+# Default values for http-echo chart
+# This chart supports deploying multiple http-echo instances
+
+# Global settings
+replicaCount: 1
+
+image:
+  repository: hashicorp/http-echo
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+# Define multiple echo instances
+instances:
+  - name: foo
+    namespace: foo
+    text: "foo"
+    port: 5678
+    service:
+      type: ClusterIP
+      port: 80
+    ingress:
+      enabled: true
+      host: foo.localhost
+      path: /
+  - name: bar
+    namespace: bar
+    text: "bar"
+    port: 5678
+    service:
+      type: ClusterIP
+      port: 80
+    ingress:
+      enabled: true
+      host: bar.localhost
+      path: /
+
+# Ingress settings
+ingress:
+  enabled: true
+  className: nginx
+  annotations: {}
+
+# Resource limits
+resources:
+  limits:
+    cpu: 100m
+    memory: 64Mi
+  requests:
+    cpu: 50m
+    memory: 32Mi
+
+# Pod settings
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,0 +1,57 @@
+{{- range .Values.instances }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "http-echo.fullname" $ }}-{{ .name }}
+  namespace: {{ .namespace }}
+  labels:
+    {{- include "http-echo.instanceLabels" (dict "root" $ "instance" .) | nindent 4 }}
+spec:
+  replicas: {{ $.Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "http-echo.instanceSelectorLabels" (dict "root" $ "instance" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "http-echo.instanceSelectorLabels" (dict "root" $ "instance" .) | nindent 8 }}
+    spec:
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: http-echo
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          args:
+            - "-text={{ .text }}"
+            - "-listen=:{{ .port }}"
+          ports:
+            - name: http
+              containerPort: {{ .port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml $.Values.resources | nindent 12 }}
+{{- end }}

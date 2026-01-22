@@ -1,0 +1,31 @@
+{{- if .Values.ingress.enabled }}
+{{- range .Values.instances }}
+{{- if .ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "http-echo.fullname" $ }}-{{ .name }}
+  namespace: {{ .namespace }}
+  labels:
+    {{- include "http-echo.instanceLabels" (dict "root" $ "instance" .) | nindent 4 }}
+  {{- with $.Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ $.Values.ingress.className }}
+  rules:
+    - host: {{ .ingress.host }}
+      http:
+        paths:
+          - path: {{ .ingress.path }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "http-echo.fullname" $ }}-{{ .name }}
+                port:
+                  number: {{ .service.port }}
+{{- end }}
+{{- end }}
+{{- end }}
