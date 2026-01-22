@@ -1,0 +1,190 @@
+name: Load Test on PR
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      users:
+        description: 'Number of concurrent users'
+        required: false
+        default: '20'
+      spawn_rate:
+        description: 'Users to spawn per second'
+        required: false
+        default: '5'
+      duration:
+        description: 'Test duration in seconds'
+        required: false
+        default: '180'
+      threshold_p95:
+        description: 'p95 response time threshold (ms)'
+        required: false
+        default: '500'
+      threshold_p99:
+        description: 'p99 response time threshold (ms)'
+        required: false
+        default: '1000'
+      threshold_error_rate:
+        description: 'Error rate threshold (%)'
+        required: false
+        default: '5'
+
+env:
+  KIND_VERSION: v0.31.0
+  LOAD_TEST_USERS: ${{ github.event.inputs.users || '20' }}
+  LOAD_TEST_SPAWN_RATE: ${{ github.event.inputs.spawn_rate || '5' }}
+  LOAD_TEST_DURATION: ${{ github.event.inputs.duration || '180' }}
+  LOAD_TEST_THRESHOLD_P95: ${{ github.event.inputs.threshold_p95 || '500' }}
+  LOAD_TEST_THRESHOLD_P99: ${{ github.event.inputs.threshold_p99 || '1000' }}
+  LOAD_TEST_THRESHOLD_ERROR_RATE: ${{ github.event.inputs.threshold_error_rate || '5' }}
+
+jobs:
+  load-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          pip install -r loadtest/requirements.txt
+
+      - name: Install KinD
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/kubectl
+
+      - name: Install Helm
+        run: |
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Create KinD cluster
+        run: |
+          kind create cluster --config kind/main.yaml --wait 5m
+
+      - name: Deploy Ingress Controller
+        run: |
+          kubectl apply -f kind/ingress-nginx.yaml
+          kubectl wait --namespace ingress-nginx \
+            --for=condition=ready pod \
+            --selector=app.kubernetes.io/component=controller \
+            --timeout=120s
+
+      - name: Deploy http-echo applications
+        run: |
+          helm install http-echo ./echo --wait --timeout 5m
+          
+          # Wait for deployments to be ready
+          kubectl wait --namespace foo \
+            --for=condition=available deployment \
+            --all --timeout=120s
+          kubectl wait --namespace bar \
+            --for=condition=available deployment \
+            --all --timeout=120s
+
+      - name: Setup /etc/hosts
+        run: |
+          echo "127.0.0.1 foo.localhost bar.localhost" | sudo tee -a /etc/hosts
+
+      - name: Port forward ingress controller
+        run: |
+          kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 80:80 &
+          sleep 5
+
+      - name: Verify services are accessible
+        run: |
+          curl -s http://foo.localhost || echo "foo.localhost not accessible"
+          curl -s http://bar.localhost || echo "bar.localhost not accessible"
+
+      - name: Create results directory
+        run: mkdir -p loadtest/results
+
+      - name: Run Python load test
+        run: |
+          cd loadtest
+          python loadtest.py \
+            --users ${{ env.LOAD_TEST_USERS }} \
+            --spawn-rate ${{ env.LOAD_TEST_SPAWN_RATE }} \
+            --duration ${{ env.LOAD_TEST_DURATION }} \
+            --threshold-p95 ${{ env.LOAD_TEST_THRESHOLD_P95 }} \
+            --threshold-p99 ${{ env.LOAD_TEST_THRESHOLD_P99 }} \
+            --threshold-error-rate ${{ env.LOAD_TEST_THRESHOLD_ERROR_RATE }} \
+            --urls urls.json \
+            --output-dir results
+        continue-on-error: true
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-results
+          path: loadtest/results/
+
+      - name: Post results to PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            let comment = '';
+            
+            try {
+              comment = fs.readFileSync('loadtest/results/summary.md', 'utf8');
+            } catch (error) {
+              comment = '## ⚠️ Load Test Results\n\nFailed to generate load test summary. Check the workflow logs for details.';
+            }
+            
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            
+            const botComment = comments.find(c => 
+              c.user.type === 'Bot' && 
+              c.body.includes('Load Test Results')
+            );
+            
+            if (botComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: comment
+              });
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: comment
+              });
+            }
+
+      - name: Check thresholds
+        run: |
+          if [ -f loadtest/results/summary.json ]; then
+            FAILED=$(cat loadtest/results/summary.json | jq '[.thresholds | to_entries[] | select(.value.ok == false)] | length')
+            if [ "$FAILED" -gt 0 ]; then
+              echo "::warning::$FAILED threshold(s) failed"
+            fi
+          fi
